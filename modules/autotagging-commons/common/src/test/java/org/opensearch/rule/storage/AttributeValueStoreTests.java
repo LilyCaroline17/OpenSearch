@@ -123,6 +123,16 @@ public class AttributeValueStoreTests extends OpenSearchTestCase {
         assertEquals(Set.of("no_constraint"), extractFeatureValues(subjectUnderTest.getMatches("")));
     }
 
+    public void testHasConstrainedValuesIgnoresEmptyKey() {
+        assertFalse(subjectUnderTest.hasConstrainedValues());
+        subjectUnderTest.put("", "no_constraint");
+        assertFalse(subjectUnderTest.hasConstrainedValues());
+        subjectUnderTest.put("foo*", "constrained");
+        assertTrue(subjectUnderTest.hasConstrainedValues());
+        subjectUnderTest.remove("foo*", "constrained");
+        assertFalse(subjectUnderTest.hasConstrainedValues());
+    }
+
     public void testBareWildcardValueMatchesEveryNonEmptyRequest() {
         // A bare "*" value (valid per RuleValidator) is reached via the shrinking-prefix loop at the empty prefix,
         // so it matches every non-empty request key at score 0, but does not match an empty request key.

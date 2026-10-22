@@ -37,6 +37,7 @@ public class WorkloadGroupFeatureType implements FeatureType {
     public WorkloadGroupFeatureType(FeatureValueValidator featureValueValidator, Map<Attribute, Integer> orderedAttributes) {
         this.featureValueValidator = featureValueValidator;
         orderedAttributes.put(RuleAttribute.INDEX_PATTERN, 2);
+        orderedAttributes.put(RuleAttribute.ACTION, 3);
         this.orderedAttributes = orderedAttributes;
     }
 

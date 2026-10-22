@@ -20,6 +20,10 @@ import org.opensearch.action.admin.cluster.wlm.WlmStatsAction;
 import org.opensearch.action.admin.cluster.wlm.WlmStatsRequest;
 import org.opensearch.action.admin.cluster.wlm.WlmStatsResponse;
 import org.opensearch.action.index.IndexResponse;
+import org.opensearch.action.search.MultiSearchAction;
+import org.opensearch.action.search.MultiSearchRequestBuilder;
+import org.opensearch.action.search.MultiSearchResponse;
+import org.opensearch.action.search.SearchAction;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.support.ActionFilter;
 import org.opensearch.action.support.ActionFilters;
@@ -54,6 +58,9 @@ import org.opensearch.discovery.SeedHostsProvider;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.query.QueryBuilders;
+import org.opensearch.index.reindex.DeleteByQueryAction;
+import org.opensearch.index.reindex.DeleteByQueryRequestBuilder;
+import org.opensearch.index.reindex.ReindexModulePlugin;
 import org.opensearch.indices.SystemIndexDescriptor;
 import org.opensearch.plugin.wlm.action.CreateWorkloadGroupAction;
 import org.opensearch.plugin.wlm.action.DeleteWorkloadGroupAction;
@@ -163,6 +170,7 @@ public class WlmAutoTaggingIT extends ParameterizedStaticSettingsOpenSearchInteg
         List<Class<? extends Plugin>> plugins = new ArrayList<>(super.nodePlugins());
         plugins.add(TestWorkloadManagementPlugin.class);
         plugins.add(RuleFrameworkPlugin.class);
+        plugins.add(ReindexModulePlugin.class);
         return plugins;
     }
 
@@ -483,17 +491,128 @@ public class WlmAutoTaggingIT extends ParameterizedStaticSettingsOpenSearchInteg
         });
     }
 
+    public void testRequestsAreTaggedByApi() throws Exception {
+        String msearchGroupId = "wlm_auto_tag_msearch";
+        String searchGroupId = "wlm_auto_tag_search";
+        String msearchRuleId = "wlm_auto_tag_msearch_rule";
+        String searchRuleId = "wlm_auto_tag_search_rule";
+        String indexName = "api_tagged_index";
+
+        setWlmMode("enabled");
+
+        updateWorkloadGroupInClusterState(PUT, createWorkloadGroup("msearch_tagging_group", msearchGroupId));
+        updateWorkloadGroupInClusterState(PUT, createWorkloadGroup("search_tagging_group", searchGroupId));
+
+        FeatureType featureType = AutoTaggingRegistry.getFeatureType(WorkloadGroupFeatureType.NAME);
+        createRule(
+            msearchRuleId,
+            "msearch rule",
+            Map.of(RuleAttribute.ACTION, Set.of(MultiSearchAction.NAME)),
+            featureType,
+            msearchGroupId
+        );
+        createRule(searchRuleId, "search rule", Map.of(RuleAttribute.ACTION, Set.of(SearchAction.NAME)), featureType, searchGroupId);
+
+        indexDocument(indexName);
+
+        try {
+            assertBusy(() -> {
+                int completionsBefore = getCompletions(searchGroupId);
+                client().prepareSearch(indexName).setQuery(QueryBuilders.matchAllQuery()).get();
+                assertTrue("Expected search completions to increase", getCompletions(searchGroupId) > completionsBefore);
+            });
+
+            assertBusy(() -> {
+                // Each search also completes shard tasks, so compare against a single sub-search
+                int searchCompletionsBefore = getCompletions(searchGroupId);
+                int oneSubSearch = msearchCompletions(indexName, msearchGroupId, 1);
+                assertTrue("Expected msearch completions to increase", oneSubSearch > 0);
+                // Sub-searches after the first are started from response callbacks
+                int threeSubSearches = msearchCompletions(indexName, msearchGroupId, 3);
+                assertTrue("Expected all sub-searches to be tagged", threeSubSearches >= 3 * oneSubSearch);
+                assertEquals(searchCompletionsBefore, getCompletions(searchGroupId));
+            });
+        } finally {
+            for (String ruleId : List.of(msearchRuleId, searchRuleId)) {
+                client().execute(DeleteRuleAction.INSTANCE, new DeleteRuleRequest(ruleId, featureType)).get();
+            }
+        }
+    }
+
+    public void testDeleteByQueryIsTaggedByApi() throws Exception {
+        String workloadGroupId = "wlm_auto_tag_delete_by_query";
+        String ruleId = "wlm_auto_tag_delete_by_query_rule";
+        String indexName = "delete_by_query_tagged_index";
+
+        setWlmMode("enabled");
+        updateWorkloadGroupInClusterState(PUT, createWorkloadGroup("delete_by_query_tagging_group", workloadGroupId));
+
+        FeatureType featureType = AutoTaggingRegistry.getFeatureType(WorkloadGroupFeatureType.NAME);
+        createRule(
+            ruleId,
+            "delete by query rule",
+            Map.of(RuleAttribute.ACTION, Set.of(DeleteByQueryAction.NAME)),
+            featureType,
+            workloadGroupId
+        );
+
+        indexDocument(indexName);
+        try {
+            assertBusy(() -> {
+                int onePage = deleteByQueryCompletions(indexName, workloadGroupId, 1);
+                assertTrue("Expected delete_by_query completions to increase", onePage > 0);
+                // Scroll pages after the first are started from bulk response callbacks
+                int threePages = deleteByQueryCompletions(indexName, workloadGroupId, 3);
+                assertTrue("Expected later scroll pages to be tagged", threePages > onePage);
+            });
+        } finally {
+            client().execute(DeleteRuleAction.INSTANCE, new DeleteRuleRequest(ruleId, featureType)).get();
+        }
+    }
+
     // Helper functions
+    private int msearchCompletions(String indexName, String workloadGroupId, int subSearches) throws Exception {
+        int completionsBefore = getCompletions(workloadGroupId);
+        MultiSearchRequestBuilder msearch = client().prepareMultiSearch().setMaxConcurrentSearchRequests(1);
+        for (int i = 0; i < subSearches; i++) {
+            msearch.add(client().prepareSearch(indexName).setQuery(QueryBuilders.matchAllQuery()));
+        }
+        for (MultiSearchResponse.Item item : msearch.get().getResponses()) {
+            assertFalse(item.isFailure());
+        }
+        return getCompletions(workloadGroupId) - completionsBefore;
+    }
+
+    private int deleteByQueryCompletions(String indexName, String workloadGroupId, int docs) throws Exception {
+        for (int i = 0; i < docs; i++) {
+            client().prepareIndex(indexName)
+                .setId(String.valueOf(i))
+                .setSource(Map.of("field", "value"))
+                .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+                .get();
+        }
+        int completionsBefore = getCompletions(workloadGroupId);
+        DeleteByQueryRequestBuilder deleteByQuery = new DeleteByQueryRequestBuilder(client(), DeleteByQueryAction.INSTANCE).source(
+            indexName
+        ).filter(QueryBuilders.matchAllQuery());
+        deleteByQuery.source().setSize(1);
+        deleteByQuery.get();
+        return getCompletions(workloadGroupId) - completionsBefore;
+    }
+
     private void createRule(String ruleId, String ruleName, String indexPattern, FeatureType featureType, String workloadGroupId)
         throws Exception {
-        Rule rule = new Rule(
-            ruleId,
-            ruleName,
-            Map.of(RuleAttribute.INDEX_PATTERN, Set.of(indexPattern)),
-            featureType,
-            workloadGroupId,
-            Instant.now().toString()
-        );
+        createRule(ruleId, ruleName, Map.of(RuleAttribute.INDEX_PATTERN, Set.of(indexPattern)), featureType, workloadGroupId);
+    }
+
+    private void createRule(
+        String ruleId,
+        String ruleName,
+        Map<Attribute, Set<String>> attributeMap,
+        FeatureType featureType,
+        String workloadGroupId
+    ) throws Exception {
+        Rule rule = new Rule(ruleId, ruleName, attributeMap, featureType, workloadGroupId, Instant.now().toString());
         client().execute(CreateRuleAction.INSTANCE, new CreateRuleRequest(rule)).get();
     }
 

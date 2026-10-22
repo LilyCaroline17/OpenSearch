@@ -25,6 +25,7 @@ dependencies {
   compileOnly project(':modules:autotagging-commons')
   testImplementation project(':modules:autotagging-commons')
   testImplementation project(':modules:autotagging-commons:common')
+  internalClusterTestImplementation project(':modules:reindex')
 }
 
 testClusters.all {

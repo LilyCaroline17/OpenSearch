@@ -70,6 +70,14 @@ public interface AttributeValueStore<K, V> {
     void clear();
 
     /**
+     * Returns true if the store may hold a key other than the empty key
+     * @return whether a rule may constrain this attribute
+     */
+    default boolean hasConstrainedValues() {
+        return size() > 0;
+    }
+
+    /**
      * It returns the number of values stored
      * @return count of key,val pairs in the store
      */

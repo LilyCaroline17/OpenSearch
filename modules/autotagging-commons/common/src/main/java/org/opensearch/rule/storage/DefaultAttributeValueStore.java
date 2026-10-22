@@ -154,6 +154,16 @@ public class DefaultAttributeValueStore<K extends String, V> implements Attribut
     }
 
     @Override
+    public boolean hasConstrainedValues() {
+        readLock.lock();
+        try {
+            return trie.size() > (trie.containsKey("") ? 1 : 0);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
     public int size() {
         return trie.size();
     }

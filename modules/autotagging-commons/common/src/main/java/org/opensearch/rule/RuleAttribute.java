@@ -18,7 +18,11 @@ public enum RuleAttribute implements Attribute {
     /**
      * Represents the index_pattern attribute in RuleAttribute
      */
-    INDEX_PATTERN("index_pattern");
+    INDEX_PATTERN("index_pattern"),
+    /**
+     * Represents the action attribute in RuleAttribute
+     */
+    ACTION("action");
 
     private final String name;
 

@@ -56,6 +56,15 @@ public class InMemoryRuleProcessingServiceTests extends OpenSearchTestCase {
         assertFalse(label.isPresent());
     }
 
+    public void testHasRulesConstraining() {
+        assertFalse(sut.hasRulesConstraining(TestAttribute.TEST_ATTRIBUTE));
+        Rule rule = getRule(Set.of("test"), "test_id");
+        sut.add(rule);
+        assertTrue(sut.hasRulesConstraining(TestAttribute.TEST_ATTRIBUTE));
+        sut.remove(rule);
+        assertFalse(sut.hasRulesConstraining(TestAttribute.TEST_ATTRIBUTE));
+    }
+
     public void testAddThenRemoveWithWildcard() {
         Rule rule = getRule(Set.of("test-*"), "test_id");
         sut.add(rule);

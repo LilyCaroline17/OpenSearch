@@ -49,6 +49,12 @@ public class WorkloadGroupFeatureTypeTests extends OpenSearchTestCase {
         assertEquals(2, orderedAttributes.get(RuleAttribute.INDEX_PATTERN).intValue());
     }
 
+    public void testGetOrderedAttributes_containsAction() {
+        Map<Attribute, Integer> orderedAttributes = featureType.getOrderedAttributes();
+        assertEquals(3, orderedAttributes.get(RuleAttribute.ACTION).intValue());
+        assertEquals(RuleAttribute.ACTION, featureType.getAllowedAttributesRegistry().get("action"));
+    }
+
     public void testRegisterFeatureType() {
         AutoTaggingRegistry.registerFeatureType(featureType);
     }

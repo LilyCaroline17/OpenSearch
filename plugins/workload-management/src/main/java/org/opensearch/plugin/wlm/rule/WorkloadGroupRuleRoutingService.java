@@ -13,10 +13,13 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.ExceptionsHelper;
 import org.opensearch.ResourceAlreadyExistsException;
 import org.opensearch.ResourceNotFoundException;
+import org.opensearch.Version;
 import org.opensearch.action.ActionListenerResponseHandler;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.admin.indices.create.CreateIndexRequest;
 import org.opensearch.action.admin.indices.create.CreateIndexResponse;
+import org.opensearch.action.search.SearchAction;
+import org.opensearch.action.search.SearchScrollAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
@@ -27,6 +30,7 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.plugin.wlm.WorkloadManagementPlugin;
+import org.opensearch.rule.RuleAttribute;
 import org.opensearch.rule.RuleRoutingService;
 import org.opensearch.rule.action.CreateRuleAction;
 import org.opensearch.rule.action.CreateRuleRequest;
@@ -34,11 +38,13 @@ import org.opensearch.rule.action.CreateRuleResponse;
 import org.opensearch.rule.action.UpdateRuleAction;
 import org.opensearch.rule.action.UpdateRuleRequest;
 import org.opensearch.rule.action.UpdateRuleResponse;
+import org.opensearch.rule.autotagging.Attribute;
 import org.opensearch.transport.TransportService;
 import org.opensearch.transport.client.Client;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Service responsible for routing CreateRule requests to the correct node based on primary shard ownership.
@@ -50,6 +56,10 @@ public class WorkloadGroupRuleRoutingService implements RuleRoutingService {
     private TransportService transportService;
     private static final Logger logger = LogManager.getLogger(WorkloadGroupRuleRoutingService.class);
     private static final Map<String, Object> indexSettings = Map.of("index.number_of_shards", 1, "index.auto_expand_replicas", "0-all");
+    /**
+     * Minimum node version that understands the action rule attribute
+     */
+    static final Version ACTION_ATTRIBUTE_MIN_VERSION = Version.V_3_10_0;
 
     /**
      * Constructor for WorkloadGroupRuleRoutingService
@@ -72,6 +82,12 @@ public class WorkloadGroupRuleRoutingService implements RuleRoutingService {
     @Override
     public void handleCreateRuleRequest(CreateRuleRequest request, ActionListener<CreateRuleResponse> listener) {
         String indexName = WorkloadManagementPlugin.INDEX_NAME;
+        try {
+            validateActionAttribute(request.getRule().getAttributeMap());
+        } catch (IllegalArgumentException e) {
+            listener.onFailure(e);
+            return;
+        }
 
         try (ThreadContext.StoredContext ctx = client.threadPool().getThreadContext().stashContext()) {
             if (hasIndex(indexName)) {
@@ -106,6 +122,12 @@ public class WorkloadGroupRuleRoutingService implements RuleRoutingService {
     @Override
     public void handleUpdateRuleRequest(UpdateRuleRequest request, ActionListener<UpdateRuleResponse> listener) {
         String indexName = WorkloadManagementPlugin.INDEX_NAME;
+        try {
+            validateActionAttribute(request.getAttributeMap());
+        } catch (IllegalArgumentException e) {
+            listener.onFailure(e);
+            return;
+        }
         try (ThreadContext.StoredContext ctx = client.threadPool().getThreadContext().stashContext()) {
             if (!hasIndex(indexName)) {
                 logger.error("Index {} not found", indexName);
@@ -114,6 +136,44 @@ public class WorkloadGroupRuleRoutingService implements RuleRoutingService {
                 routeRequest(UpdateRuleAction.NAME, indexName, request, UpdateRuleResponse::new, listener);
             }
         }
+    }
+
+    /**
+     * Validates the action attribute of a rule
+     * @param attributeMap the attributes of the rule
+     */
+    void validateActionAttribute(Map<Attribute, Set<String>> attributeMap) {
+        if (attributeMap == null || attributeMap.containsKey(RuleAttribute.ACTION) == false) {
+            return;
+        }
+        Version minNodeVersion = clusterService.state().nodes().getMinNodeVersion();
+        if (minNodeVersion.before(ACTION_ATTRIBUTE_MIN_VERSION)) {
+            throw new IllegalArgumentException(
+                "Rules with the ["
+                    + RuleAttribute.ACTION.getName()
+                    + "] attribute require all nodes to be on version "
+                    + ACTION_ATTRIBUTE_MIN_VERSION
+                    + " or later, but the cluster has a node on "
+                    + minNodeVersion
+            );
+        }
+        for (String value : attributeMap.get(RuleAttribute.ACTION)) {
+            if (value.indexOf(':') < 0) {
+                throw invalidActionValue(value, "expected a transport action name such as indices:data/read/search");
+            }
+            if (value.indexOf('[') >= 0) {
+                throw invalidActionValue(value, "shard and node level actions are not matched");
+            }
+            if (value.startsWith(SearchScrollAction.NAME)) {
+                throw invalidActionValue(value, "scroll requests are matched as " + SearchAction.NAME);
+            }
+        }
+    }
+
+    private static IllegalArgumentException invalidActionValue(String value, String reason) {
+        return new IllegalArgumentException(
+            "[" + RuleAttribute.ACTION.getName() + "] attribute value [" + value + "] is invalid (" + reason + ")"
+        );
     }
 
     /**

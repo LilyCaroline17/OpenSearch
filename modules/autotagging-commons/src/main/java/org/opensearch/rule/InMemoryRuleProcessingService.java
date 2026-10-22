@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
 /**
  * This class is responsible for managing in-memory view of Rules and Find matching Rule for the request
@@ -34,6 +35,7 @@ public class InMemoryRuleProcessingService {
      * Map of prioritized attributes
      */
     private final Map<Attribute, Integer> prioritizedAttributes;
+    private volatile Set<Attribute> constrainedAttributes = Set.of();
 
     /**
      * Constructs an InMemoryRuleProcessingService with the given
@@ -65,7 +67,7 @@ public class InMemoryRuleProcessingService {
         perform(rule, this::removeOperation);
     }
 
-    private void perform(Rule rule, BiConsumer<Map.Entry<Attribute, Set<String>>, Rule> ruleOperation) {
+    private synchronized void perform(Rule rule, BiConsumer<Map.Entry<Attribute, Set<String>>, Rule> ruleOperation) {
         for (Attribute attribute : rule.getFeatureType().getAllowedAttributesRegistry().values()) {
             Set<String> attributeValues;
             if (rule.getAttributeMap().containsKey(attribute)) {
@@ -75,6 +77,12 @@ public class InMemoryRuleProcessingService {
             }
             ruleOperation.accept(Map.entry(attribute, attributeValues), rule);
         }
+        constrainedAttributes = rule.getFeatureType()
+            .getAllowedAttributesRegistry()
+            .values()
+            .stream()
+            .filter(attribute -> attributeValueStoreFactory.getAttributeValueStore(attribute).hasConstrainedValues())
+            .collect(Collectors.toUnmodifiableSet());
     }
 
     private void removeOperation(Map.Entry<Attribute, Set<String>> attributeEntry, Rule rule) {
@@ -89,6 +97,14 @@ public class InMemoryRuleProcessingService {
         for (String value : attributeEntry.getValue()) {
             valueStore.put(value, rule.getFeatureValue());
         }
+    }
+
+    /**
+     * Returns true if any rule sets a value for the given attribute
+     * @param attribute the attribute to check
+     */
+    public boolean hasRulesConstraining(Attribute attribute) {
+        return constrainedAttributes.contains(attribute);
     }
 
     /**

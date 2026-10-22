@@ -28,6 +28,11 @@ public class RuleAttributeTests extends OpenSearchTestCase {
         assertEquals(RuleAttribute.INDEX_PATTERN, attribute);
     }
 
+    public void testActionAttribute() {
+        assertEquals("action", RuleAttribute.ACTION.getName());
+        assertEquals(RuleAttribute.ACTION, RuleAttribute.fromName("action"));
+    }
+
     public void testFromName_throwsException() {
         assertThrows(IllegalArgumentException.class, () -> RuleAttribute.fromName("invalid_attribute"));
     }
