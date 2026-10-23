@@ -141,6 +141,64 @@ public class InMemoryRuleProcessingServiceTests extends OpenSearchTestCase {
         assertFalse(sut.evaluateLabel(getAttributeExtractors(List.of("my-index-1"))).isPresent());
     }
 
+    public void testRemoveKeepsValuesSharedWithOtherRules() {
+        // Both rules leave the second attribute unset, so they share its empty value for the same label
+        Attribute secondAttribute = () -> "second_attribute";
+        FeatureType featureType = new FeatureType() {
+            @Override
+            public String getName() {
+                return "two_attributes";
+            }
+
+            @Override
+            public Map<Attribute, Integer> getOrderedAttributes() {
+                return Map.of(TestAttribute.TEST_ATTRIBUTE, 1, secondAttribute, 2);
+            }
+        };
+        InMemoryRuleProcessingService service = new InMemoryRuleProcessingService(
+            new AttributeValueStoreFactory(featureType, DefaultAttributeValueStore::new),
+            featureType.getOrderedAttributes()
+        );
+        Rule first = new Rule(
+            "first",
+            "test description",
+            Map.of(TestAttribute.TEST_ATTRIBUTE, Set.of("test")),
+            featureType,
+            "test_id",
+            "2025-02-24T07:42:10.123456Z"
+        );
+        Rule second = new Rule(
+            "second",
+            "test description",
+            Map.of(TestAttribute.TEST_ATTRIBUTE, Set.of("other")),
+            featureType,
+            "test_id",
+            "2025-02-24T07:42:10.123456Z"
+        );
+        service.add(first);
+        service.add(second);
+        service.remove(second);
+
+        List<AttributeExtractor<String>> extractors = getAttributeExtractors(List.of("test"));
+        extractors.add(new AttributeExtractor<>() {
+            @Override
+            public Attribute getAttribute() {
+                return secondAttribute;
+            }
+
+            @Override
+            public Iterable<String> extract() {
+                return List.of("anything");
+            }
+
+            @Override
+            public LogicalOperator getLogicalOperator() {
+                return OR;
+            }
+        });
+        assertEquals(Optional.of("test_id"), service.evaluateLabel(extractors));
+    }
+
     public void testEvaluateLabelForNoMatchWithLongestMatchingPrefixCase() {
         sut.add(getRule(Set.of("key1", "change"), "test_id"));
         sut.add(getRule(Set.of("key12", "double"), "test_id1"));

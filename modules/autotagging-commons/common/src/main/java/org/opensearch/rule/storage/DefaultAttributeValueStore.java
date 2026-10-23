@@ -12,8 +12,10 @@ import org.apache.commons.collections4.trie.PatriciaTrie;
 import org.opensearch.rule.MatchLabel;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -31,6 +33,10 @@ public class DefaultAttributeValueStore<K extends String, V> implements Attribut
      */
     private static final String WILDCARD = "*";
     private final PatriciaTrie<Set<V>> trie;
+    /**
+     * Number of puts per key and value, as rules share a value when they set the same one or don't set the attribute
+     */
+    private final Map<K, Map<V, Integer>> refCounts = new HashMap<>();
     private static final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private static final ReentrantReadWriteLock.ReadLock readLock = lock.readLock();
     private static final ReentrantReadWriteLock.WriteLock writeLock = lock.writeLock();
@@ -55,6 +61,7 @@ public class DefaultAttributeValueStore<K extends String, V> implements Attribut
         writeLock.lock();
         try {
             trie.computeIfAbsent(key, k -> new HashSet<>()).add(value);
+            refCounts.computeIfAbsent(key, k -> new HashMap<>()).merge(value, 1, Integer::sum);
         } finally {
             writeLock.unlock();
         }
@@ -64,6 +71,16 @@ public class DefaultAttributeValueStore<K extends String, V> implements Attribut
     public void remove(K key, V value) {
         writeLock.lock();
         try {
+            Map<V, Integer> counts = refCounts.get(key);
+            if (counts != null) {
+                if (counts.merge(value, -1, Integer::sum) > 0) {
+                    return;
+                }
+                counts.remove(value);
+                if (counts.isEmpty()) {
+                    refCounts.remove(key);
+                }
+            }
             trie.computeIfPresent(key, (k, values) -> {
                 values.remove(value);
                 return values.isEmpty() ? null : values;
@@ -148,6 +165,7 @@ public class DefaultAttributeValueStore<K extends String, V> implements Attribut
         writeLock.lock();
         try {
             trie.clear();
+            refCounts.clear();
         } finally {
             writeLock.unlock();
         }
