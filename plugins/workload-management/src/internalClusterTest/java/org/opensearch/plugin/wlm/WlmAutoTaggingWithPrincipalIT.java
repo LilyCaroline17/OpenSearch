@@ -145,6 +145,43 @@ public class WlmAutoTaggingWithPrincipalIT extends WlmAutoTaggingIT {
         }
     }
 
+    public void testIndexOnlyRuleAndPrincipalOnlyRuleOfGroupDoNotTagUnrelatedSearch() throws Exception {
+        String workloadGroupId = "wlm_auto_tag_split_group";
+        String sentinelGroupId = "wlm_auto_tag_split_sentinel_group";
+        String indexRuleIndex = "split_logs";
+        String unrelatedIndex = "split_orders";
+        String sentinelIndex = "split_sentinel_index";
+
+        setWlmMode("enabled");
+        updateWorkloadGroupInClusterState(PUT, createWorkloadGroup("split_group", workloadGroupId));
+        updateWorkloadGroupInClusterState(PUT, createWorkloadGroup("split_sentinel_group", sentinelGroupId));
+
+        // One rule of the group sets only the index and the other only the principal. The test principal extractor always
+        // extracts test_user, so a search on unrelatedIndex matches neither rule
+        FeatureType featureType = AutoTaggingRegistry.getFeatureType(WorkloadGroupFeatureType.NAME);
+        createRule("wlm_auto_tag_split_index_rule", "index-only rule", indexRuleIndex, featureType, workloadGroupId);
+        createPrincipalOnlyRule("wlm_auto_tag_split_other_user_rule", "username|other_user", featureType, workloadGroupId);
+        createRule("wlm_auto_tag_split_sentinel_rule", "sentinel rule", sentinelIndex, featureType, sentinelGroupId);
+        indexDocument(indexRuleIndex);
+        indexDocument(unrelatedIndex);
+        indexDocument(sentinelIndex);
+
+        for (String node : internalCluster().getNodeNames()) {
+            // Wait for the node to sync all three rules
+            assertBusy(() -> assertTrue("Expected sentinel rule to tag", searchCompletions(node, sentinelIndex, sentinelGroupId) > 0));
+            assertBusy(() -> assertTrue("Expected index-only rule to tag", searchCompletions(node, indexRuleIndex, workloadGroupId) > 0));
+            // The sentinel was created last, so this node has also synced the principal-only rule
+            assertEquals("Expected no tagging from mixing rules", 0, searchCompletions(node, unrelatedIndex, workloadGroupId));
+        }
+    }
+
+    private void createPrincipalOnlyRule(String ruleId, String principal, FeatureType featureType, String workloadGroupId)
+        throws Exception {
+        Map<Attribute, Set<String>> attributes = Map.of(TestPrincipalAttribute.PRINCIPAL, Set.of(principal));
+        Rule rule = new Rule(ruleId, "principal-only rule", attributes, featureType, workloadGroupId, Instant.now().toString());
+        client().execute(CreateRuleAction.INSTANCE, new CreateRuleRequest(rule)).get();
+    }
+
     private void createPrincipalRule(String ruleId, String indexPattern, String principal, FeatureType featureType, String workloadGroupId)
         throws Exception {
         Map<Attribute, Set<String>> attributes = Map.of(
